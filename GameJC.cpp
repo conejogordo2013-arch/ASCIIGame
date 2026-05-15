@@ -173,8 +173,15 @@ bool exitGame=false;
 bool advancedPort=false;
 
 int frameCount=0;
-int bossLife=0;
-bool bossPlaced=false;
+struct Boss {
+    int x=0, y=0;
+    int hp=0;
+    bool exists=false;
+    int contactDamage=2;
+};
+
+Boss boss;
+bool playerWon=false;
 
 vector<PickUp> pickups;
 vector<Cannon> cannons;
@@ -182,6 +189,8 @@ vector<Bullet> bullets;
 vector<Runner> runners;
 vector<Randomer> randomers;
 vector<Chaser> chasers;
+
+void damagePlayer(int amount=1);
 
 inline bool insideMap(int x, int y) {
     return x>=1 && x<=mapW && y>=1 && y<=mapH;
@@ -194,7 +203,7 @@ char baseMapAt(int x, int y) {
 
 bool isBlockingStatic(int x,int y) {
     char b = baseMapAt(x,y);
-    if (b==' ' || b=='.' ) return false;
+    if (b==' ' || b=='.' || b=='X') return false;
     return true;
 }
 
@@ -203,6 +212,7 @@ char dynamicAt(int x,int y) {
     for (auto &r: runners) if (r.exists && r.x==x && r.y==y) return 'S';
     for (auto &r: randomers) if (r.exists && r.x==x && r.y==y) return '%';
     for (auto &c: chasers) if (c.exists && c.x==x && c.y==y) return '&';
+    if (boss.exists && boss.x==x && boss.y==y) return 'X';
     for (auto &b: bullets) if (b.exists && b.x==x && b.y==y) return 'o';
     if (player.x==x && player.y==y) return '>';
     return 0;
@@ -252,8 +262,9 @@ bool loadLevelFromFile(const string &filename) {
     runners.clear();
     randomers.clear();
     chasers.clear();
-    bossPlaced = false;
-    bossLife = 0;
+    boss = Boss{};
+    playerWon = false;
+    player.checkpoint = 0;
 
     for (int y=1;y<=mapH;y++){
         for (int x=1;x<=mapW;x++){
@@ -310,7 +321,11 @@ bool loadLevelFromFile(const string &filename) {
                 levelMap[y-1][x-1] = ' ';
             }
             else if (c=='X') {
-                levelMap[y-1][x-1] = 'X';
+                boss.exists = true;
+                boss.x = x;
+                boss.y = y;
+                boss.hp = 50;
+                levelMap[y-1][x-1] = ' ';
             }
         }
     }
@@ -335,7 +350,6 @@ void drawFullScreen() {
             else if(ch=='@') { setColor(90); putchar('@'); } // Pared empujable
             else if(ch=='-') { setColor(31); putchar('-'); }
             else if(ch=='|') { setColor(31); putchar('|'); }
-            else if(ch=='X') { setColor(90); putchar('X'); }
             else putchar(ch);
         }
     }
@@ -372,6 +386,12 @@ void drawFullScreen() {
         putchar('&');
     }
 
+    if (boss.exists) {
+        gotoxy(boss.x,boss.y);
+        setColor(91);
+        putchar('X');
+    }
+
     for (auto &b: bullets) if (b.exists) {
         gotoxy(b.x,b.y);
         setColor(31);
@@ -402,10 +422,18 @@ else if(player.dir=='d') playerChar = '>';
     gotoxy(mapW+2,8);
     printf("Checkpoint: %d", player.checkpoint);
 
-    if (advancedPort && bossPlaced) {
+    if (boss.exists) {
         gotoxy(mapW+2,10);
-        printf("Boss HP: %d", bossLife);
+        printf("Boss HP: %d", boss.hp);
     }
+
+    gotoxy(mapW+2,12); printf("Leyenda:");
+    gotoxy(mapW+2,13); printf("A=Ammo +5");
+    gotoxy(mapW+2,14); printf("+=Vida +1");
+    gotoxy(mapW+2,15); printf("C=Checkpoint");
+    gotoxy(mapW+2,16); printf("S %% &=Enemigos");
+    gotoxy(mapW+2,17); printf("X=Boss (50 HP)");
+    gotoxy(mapW+2,18); printf("@=Caja movible");
 
     resetColor();
     fflush(stdout);
@@ -435,10 +463,7 @@ void updateBullets() {
         else if (b.dir=='a') nx--;
         else if (b.dir=='d') nx++;
 
-        if (!insideMap(nx,ny) || isBlockingStatic(nx,ny) || baseMapAt(nx,ny)=='X') {
-
-            if (baseMapAt(nx,ny)=='X' && b.fromPlayer && advancedPort && bossPlaced)
-                bossLife--;
+        if (!insideMap(nx,ny) || isBlockingStatic(nx,ny)) {
 
             b.exists=false;
             continue;
@@ -477,11 +502,15 @@ void updateBullets() {
 
         if (stopped) continue;
 
+        if (boss.exists && boss.x==nx && boss.y==ny) {
+            if (b.fromPlayer) boss.hp--;
+            b.exists=false;
+            continue;
+        }
+
         if (nx==player.x && ny==player.y) {
             if (!b.fromPlayer) {
-                player.lostLife = true;
-                player.lifes--;
-                player.respawnTime = 20;
+                damagePlayer();
             }
             b.exists=false;
             continue;
@@ -506,6 +535,14 @@ void updateBullets() {
 
 int randRange(int a,int b){ return a + (rand() % (b-a+1)); }
 
+void damagePlayer(int amount) {
+    player.lostLife = true;
+    player.lifes -= amount;
+    player.respawnTime = 20;
+    player.x = player.checkpointX;
+    player.y = player.checkpointY;
+}
+
 void updateRandomers() {
     for (auto &r: randomers) {
         if (!r.exists) continue;
@@ -527,9 +564,7 @@ void updateRandomers() {
 
         if (isBlockingStatic(nx,ny)) {
             if (nx==player.x && ny==player.y) {
-                player.lostLife=true;
-                player.lifes--;
-                player.respawnTime=20;
+                damagePlayer();
             }
             continue;
         }
@@ -537,9 +572,7 @@ void updateRandomers() {
         r.x=nx; r.y=ny;
 
         if (r.x==player.x && r.y==player.y) {
-            player.lostLife=true;
-            player.lifes--;
-            player.respawnTime=20;
+            damagePlayer();
         }
     }
 }
@@ -560,9 +593,7 @@ void updateRunners() {
         }
 
         if (nx==player.x && r.y==player.y) {
-            player.lostLife=true;
-            player.lifes--;
-            player.respawnTime=20;
+            damagePlayer();
         }
 
         r.x = nx;
@@ -593,9 +624,7 @@ void updateChasers() {
 
         if (!isBlockingStatic(nx,ny)) {
             if (nx==player.x && ny==player.y) {
-                player.lostLife=true;
-                player.lifes--;
-                player.respawnTime=20;
+                damagePlayer();
             }
             c.x=nx; c.y=ny;
         } else {
@@ -603,9 +632,7 @@ void updateChasers() {
                 int ty = c.y + (dy>0?1:-1);
                 if (!isBlockingStatic(c.x,ty)) {
                     if (c.x==player.x && ty==player.y) {
-                        player.lostLife=true;
-                        player.lifes--;
-                        player.respawnTime=20;
+                        damagePlayer();
                     }
                     c.y=ty;
                 }
@@ -613,9 +640,7 @@ void updateChasers() {
                 int tx = c.x + (dx>0?1:-1);
                 if (!isBlockingStatic(tx,c.y)) {
                     if (tx==player.x && c.y==player.y) {
-                        player.lostLife=true;
-                        player.lifes--;
-                        player.respawnTime=20;
+                        damagePlayer();
                     }
                     c.x=tx;
                 }
@@ -657,17 +682,18 @@ void updateCannons() {
 void collectPickups() {
     for (auto &p: pickups)
         if (p.exists && p.x==player.x && p.y==player.y) {
-
-            if (p.type=='A') player.ammo += 5;
-            else if (p.type=='+') player.lifes += 1;            p.exists = false;
-            
-          if (p.type == 'C') {
-    // Solo se guarda la posición del objeto 'C', no la del jugador en cualquier momento
-    player.checkpointX = p.x; 
-    player.checkpointY = p.y;
-    player.checkpoint += 1;
-    p.exists = false; // El checkpoint desaparece al tocarlo
-}
+            if (p.type=='A') {
+                player.ammo += 5;
+                p.exists = false;
+            } else if (p.type=='+') {
+                player.lifes += 1;
+                p.exists = false;
+            } else if (p.type == 'C') {
+                player.checkpointX = p.x;
+                player.checkpointY = p.y;
+                player.checkpoint += 1;
+                p.exists = false;
+            }
         }
 }
 
@@ -720,15 +746,15 @@ if (levelMap[ny-1][nx-1] == '@') {
     return;
 }
         // Mover jugador normalmente
-        else if (!isBlockingStatic(nx, ny) && d != 'S' && d != '%' && d != '&') {
+        else if (!isBlockingStatic(nx, ny) && d != 'S' && d != '%' && d != '&' && d != 'X') {
             player.x = nx;
             player.y = ny;
         }
         // Colisión con enemigos
         else if (d == 'S' || d == '%' || d == '&') {
-            player.lostLife = true;
-            player.lifes--;
-            player.respawnTime = 20;
+            damagePlayer();
+        } else if (d == 'X') {
+            damagePlayer(boss.contactDamage);
         }
     }
 
@@ -752,49 +778,13 @@ if (levelMap[ny-1][nx-1] == '@') {
 
     // Respawn / checkpoint
     else if (c == 'r') {
-       player.lifes -= 1;
-       player.lostLife = true; 
-       player.respawnTime = 20;
-
-        if (player.checkpoint == 0) {
-            player.x = 2;
-            player.y = mapH - 2;
-        } else {
-            player.x = max(2, mapW / 2);
-            player.y = max(2, mapH / 2);
-        }
+       damagePlayer();
     }
 }
 /* ---------------------------
    JEFE (BOSS)
    --------------------------- */
 
-void maybeSpawnBoss() {
-    if (!advancedPort) return;
-
-    if (player.checkpoint >= 5 && !bossPlaced) {
-        bossPlaced = true;
-        bossLife = 60;
-
-        int cx = min(mapW-5, max(10,mapW*3/4));
-        int cy = min(mapH-6, max(6,mapH/2));
-
-        for (int yy=cy;yy<cy+5;yy++)
-            for (int xx=cx;xx<cx+7;xx++)
-                if (insideMap(xx,yy))
-                    levelMap[yy-1][xx-1] = 'X';
-
-        for (int i=0;i<4;i++) {
-            Cannon c;
-            c.exists=true;
-            c.x=cx+i*2;
-            c.y=cy-1;
-            c.dir='s';
-            c.speed=20;
-            cannons.push_back(c);
-        }
-    }
-}
 /* ============================
    GAME TERMUX PORT - PARTE 4/4
    ============================ */
@@ -825,7 +815,6 @@ void gameLoop() {
 
         updateBullets();
         collectPickups();
-        maybeSpawnBoss();
 
         drawFullScreen();
 
@@ -843,9 +832,6 @@ void gameLoop() {
     }
     player.lostLife = false;
 
-    // REAPARECER EN CHECKPOINT
-    player.checkpointX = player.x;
-    player.checkpointY = player.y;
 }
 
         if (player.lifes <= 0) {
@@ -861,7 +847,8 @@ void gameLoop() {
             break;
         }
 
-        if (bossPlaced && bossLife <= 0) {
+        if (boss.exists && boss.hp <= 0) {
+            playerWon = true;
             inGame = false;
             gotoxy(max(1, mapW/2 - 6), max(1, mapH/2));
             setColor(32);
@@ -962,6 +949,7 @@ void mainMenu(const string &initialFile) {
                     getch_block();
                 } else {
                     player.lifes = 3; player.ammo = 15; player.respawnTime = 0; player.lostLife = false;
+                    playerWon = false;
                     if (player.x<1 || player.y<1) { player.x=2; player.y=max(2,mapH-2); }
                     if (advancedPort) {
                         for (int i=0;i<5;i++) {
