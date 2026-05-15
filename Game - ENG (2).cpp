@@ -6,11 +6,65 @@
 /// (of course except things like text-based games)
 #include <iostream>
 #include <cstdlib>
+#ifdef _WIN32
 #include <windows.h>
+#include <conio.h>
+#else
+#include <unistd.h>
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <fcntl.h>
+#endif
 #include <time.h>
 #include <fstream>
-#include <conio.h>
 using namespace std;
+
+#ifndef _WIN32
+typedef int HANDLE;
+typedef unsigned long DWORD;
+typedef struct { short X; short Y; } COORD;
+typedef struct { COORD dwCursorPosition; } CONSOLE_SCREEN_BUFFER_INFO;
+#define STD_OUTPUT_HANDLE 0
+#define INVALID_HANDLE_VALUE -1
+HANDLE GetStdHandle(int) { return 0; }
+bool SetConsoleCursorPosition(HANDLE, COORD coord) { cout << "\033[" << coord.Y + 1 << ";" << coord.X + 1 << "H"; return true; }
+bool GetConsoleScreenBufferInfo(HANDLE, CONSOLE_SCREEN_BUFFER_INFO* c) { c->dwCursorPosition.X = 0; c->dwCursorPosition.Y = 0; return true; }
+bool ReadConsoleOutputCharacterA(HANDLE, char* c, int, COORD, DWORD* read) { *c = ' '; *read = 1; return true; }
+void SetConsoleTextAttribute(HANDLE, int) {}
+int getch()
+{
+    termios oldt, newt;
+    int ch;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    ch = getchar();
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return ch;
+}
+int _kbhit()
+{
+    termios oldt, newt;
+    int ch;
+    int oldf;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    oldf = fcntl(STDIN_FILENO, F_GETFL, 0);
+    fcntl(STDIN_FILENO, F_SETFL, oldf | O_NONBLOCK);
+    ch = getchar();
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    fcntl(STDIN_FILENO, F_SETFL, oldf);
+    if (ch != EOF) { ungetc(ch, stdin); return 1; }
+    return 0;
+}
+void Sleep(int ms) { usleep(ms * 1000); }
+#define system_clear() system("clear")
+#else
+#define system_clear() system_clear()
+#endif
 
 class Player
 {
@@ -100,6 +154,8 @@ bool chasersPlaced=false;       /// Why the fuck is it a global variable?
 char c;     /// Why the fuck is it a global variable?
 bool exitConsole=false;
 bool inGame;
+bool builderMode=false;
+bool historyMode=true;
 Chaser chaser[30];
 PickUp pickUp[40];
 Randomer randomer[50];
@@ -110,6 +166,24 @@ Bullet bullet[400];
 int nrBullet;       /// Bullet number is a shitty solution to a problem made by not using dynamic arrays or vectors
 int frameCount; /// for game objects -> instead of adding and removing bullets from array they get a number
                     /// which represents its position in static array
+
+class BuilderConfig
+{
+public:
+    int runnerCount;
+    int runnerLife;
+    int cannonHCount;
+    int cannonHSpeed;
+    int cannonVCount;
+    int cannonVSpeed;
+    int randomerCount;
+    int randomerLife;
+    int randomerRange;
+    int randomerSpeed;
+    int pickupLifeCount;
+    int pickupAmmoCount;
+};
+BuilderConfig builderConfig;
 void gotoxy(int x, int y)
 {
   COORD coord;
@@ -1499,7 +1573,7 @@ void levelRestart()
 {
     c='0';
     frameCount=0;
-    system("CLS");
+    system_clear();
     if(player.checkPoint==0)
     {
         player.x=2;
@@ -1541,7 +1615,7 @@ void levelRestart()
 
 void speed()
 {
-    system("CLS");
+    system_clear();
     char c=' ';
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),15);
     gotoxy(48,16);
@@ -1587,19 +1661,19 @@ void trudnosc()
 void options()
 {
     char c='0';
-    int chosen=2;
+    int chosen=3;
     while (c!=' ')
     {
-    system("CLS");
+    system_clear();
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),11);
     gotoxy(55,14);
     cout<<char(24);
     gotoxy(55,15);
     cout<<"W";
 
-    gotoxy(55,28);
+    gotoxy(55,30);
     cout<<char(25);
-    gotoxy(55,27);
+    gotoxy(55,29);
     cout<<"S";
 
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),15);
@@ -1651,7 +1725,7 @@ void options()
     {
         c=' ';
     }
-    system("CLS");
+    system_clear();
     chosen=2;
     }
 
@@ -1673,12 +1747,98 @@ void startGame()
         pickUp[i].exists=true;
     }
     clearAllObjects();
-    loadLevelBase("level_1.txt");
-    loadLevelObjects(1);
+    if (historyMode==true)
+    {
+        loadLevelBase("level_1.txt");
+        loadLevelObjects(1);
+    }
+    if (builderMode==true)
+    {
+        loadLevelBase("custom_level.txt");
+        for (int i=0;i<builderConfig.runnerCount;i++)
+        {
+            createRunnerHorizontal(i, 10+(i*3), 10+(i%6), 'd', builderConfig.runnerLife);
+        }
+        for (int i=0;i<builderConfig.cannonHCount;i++)
+        {
+            createCannonHorizontal(i, 20+(i*4), 20+(i%8), 'a', builderConfig.cannonHSpeed);
+        }
+        for (int i=0;i<builderConfig.cannonVCount;i++)
+        {
+            createCannonVertical(i, 30+(i*4), 8+(i%10), 's', builderConfig.cannonVSpeed);
+        }
+        for (int i=0;i<builderConfig.randomerCount;i++)
+        {
+            createRandomer(i, 40+(i*2), 15+(i%10), builderConfig.randomerLife, builderConfig.randomerRange, builderConfig.randomerSpeed);
+        }
+        for (int i=0;i<builderConfig.pickupLifeCount;i++)
+        {
+            createPickUpLife(i, 5+(i*3), 5+(i%8));
+        }
+        for (int i=0;i<builderConfig.pickupAmmoCount;i++)
+        {
+            createPickUpAmunicja(20+i, 50+(i*2), 30+(i%5));
+        }
+    }
     drawLegend();
     gotoxy(player.x,player.y);
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),11);
     cout<<char(24);
+}
+
+void makeDefaultBuilderConfig()
+{
+    builderConfig.runnerCount=4;
+    builderConfig.runnerLife=2;
+    builderConfig.cannonHCount=4;
+    builderConfig.cannonHSpeed=20;
+    builderConfig.cannonVCount=4;
+    builderConfig.cannonVSpeed=25;
+    builderConfig.randomerCount=3;
+    builderConfig.randomerLife=2;
+    builderConfig.randomerRange=4;
+    builderConfig.randomerSpeed=18;
+    builderConfig.pickupLifeCount=4;
+    builderConfig.pickupAmmoCount=6;
+}
+
+void createCustomLevelBase()
+{
+    ofstream level("custom_level.txt");
+    for (int y=0;y<40;y++)
+    {
+        for (int x=0;x<110;x++)
+        {
+            if (y==0||y==39||x==0||x==109) level<<"#";
+            else if ((y%8==0) && (x>8 && x<100)) level<<"#";
+            else level<<" ";
+        }
+        level<<"\n";
+    }
+}
+
+void builderSetup()
+{
+    makeDefaultBuilderConfig();
+    system_clear();
+    cout<<"=== BUILDER MODE (Linux/Windows compatible) ===\n";
+    cout<<"Configura tu nivel (ENTER conserva valor por defecto).\n";
+    string line;
+    auto askInt=[&](const string &label,int &value){ cout<<label<<" ["<<value<<"]: "; getline(cin,line); if(!line.empty()) value=atoi(line.c_str()); };
+    cin.ignore(10000,'\n');
+    askInt("Runners cantidad", builderConfig.runnerCount);
+    askInt("Runners vida", builderConfig.runnerLife);
+    askInt("Canones horizontales cantidad", builderConfig.cannonHCount);
+    askInt("Canones horizontales velocidad (frames)", builderConfig.cannonHSpeed);
+    askInt("Canones verticales cantidad", builderConfig.cannonVCount);
+    askInt("Canones verticales velocidad (frames)", builderConfig.cannonVSpeed);
+    askInt("Randomers cantidad", builderConfig.randomerCount);
+    askInt("Randomers vida", builderConfig.randomerLife);
+    askInt("Randomers rango", builderConfig.randomerRange);
+    askInt("Randomers velocidad", builderConfig.randomerSpeed);
+    askInt("Pickups de vida", builderConfig.pickupLifeCount);
+    askInt("Pickups de municion", builderConfig.pickupAmmoCount);
+    createCustomLevelBase();
 }
 
 void menu()
@@ -1686,7 +1846,7 @@ void menu()
     char c='0';
     int chosen=2;
     exitConsole=false;
-    system("CLS");
+    system_clear();
     while ((inGame==false) && (exitConsole==false))
     {
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),11);
@@ -1701,12 +1861,14 @@ void menu()
     cout<<"S";
 
     SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),15);
-    gotoxy(52,19);
-    cout<<" START ";
-    gotoxy(52,21);
-    cout<<"OPTIONS";
-    gotoxy(52,23);
-    cout<<" QUIT  ";
+    gotoxy(49,19);
+    cout<<"HISTORY MODE";
+    gotoxy(49,21);
+    cout<<"BUILDER MODE";
+    gotoxy(49,23);
+    cout<<"  OPTIONS   ";
+    gotoxy(49,25);
+    cout<<"   QUIT     ";
     while (c!=char(13))
     {
         SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),10);
@@ -1722,7 +1884,7 @@ void menu()
         cout<<"  ";
         if (c=='s')
         {
-            if (chosen<4)
+            if (chosen<6)
             {
                 chosen+=2;
             }
@@ -1737,20 +1899,29 @@ void menu()
     }
     if (chosen==0)
     {
+        historyMode=true;
+        builderMode=false;
         inGame=true;
     }
     if (chosen==2)
     {
-        options();
+        historyMode=false;
+        builderMode=true;
+        builderSetup();
+        inGame=true;
     }
     if (chosen==4)
+    {
+        options();
+    }
+    if (chosen==6)
     {
         inGame=false;
         exitConsole=true;
     }
-    chosen=2;
+    chosen=3;
     c=' ';
-    system("CLS");
+    system_clear();
     }
 }
 
@@ -1818,7 +1989,7 @@ int main()
         }
         if ((exitConsole==false)&&(bossLife>0))
         {
-            system("CLS");
+            system_clear();
             gotoxy(52,20);
             SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),6);
             cout<<"GAME OVER";
@@ -1834,7 +2005,7 @@ int main()
         if (bossLife<=0)
         {
             createBossDefeated();
-            system("CLS");
+            system_clear();
             gotoxy(52,20);
             SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE),6);
             cout<<"YOU WON!";
